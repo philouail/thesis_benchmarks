@@ -1,0 +1,13 @@
+# Quarto and R
+.quarto/
+*_files/
+.Rhistory
+.Rproj.user/
+
+# PlantUML renderer and local renders
+plantuml.jar
+figure_sources/diagrams/*.png
+
+# OS noise
+.DS_Store
+*~

@@ -1,0 +1,50 @@
+@startuml
+' Repository download backends: all three extend the on-disk MsBackendMzR and
+' differ only in the acquisition layer. Green = developed in this thesis.
+' Smetana layout: renders without a Graphviz/dot installation.
+!pragma layout smetana
+title Repository download backends
+skinparam shadow false
+skinparam linetype ortho
+skinparam nodesep 22
+skinparam ranksep 34
+skinparam class {
+  BackgroundColor White
+  BorderColor #777777
+  ArrowColor #555555
+}
+
+abstract class MsBackend <<Spectra: virtual interface>>
+
+class MsBackendMzR <<Spectra: on-disk reader>> {
+  reads rtime / m/z / intensity
+  from mzML files on demand
+}
+
+class MsBackendMetaboLights #line:2e7d32;back:e8f5e9 {
+  resolve a MetaboLights study
+  accession + ISA-Tab metadata
+  --
+  <b>file list:</b> FTP (ISA-Tab assay table)
+  <b>download:</b> FTP
+}
+class MsBackendMassIVE #line:2e7d32;back:e8f5e9 {
+  resolve a MassIVE dataset
+  --
+  <b>file list:</b> REST API (GNPS2 dataset cache)
+  <b>download:</b> FTP (path from MassIVE PROXI API)
+}
+class "MsBackendMetabolomics-\nWorkbench" as MW {
+  resolve a Workbench study
+  --
+  <b>file list:</b> HTTPS (archive-contents page)
+  <b>download:</b> HTTPS POST, one file at a time
+  <i>optional:</i> FTP, whole-study archive
+}
+
+MsBackend <|-- MsBackendMzR
+MsBackendMzR <|-- MsBackendMetaboLights
+MsBackendMzR <|-- MsBackendMassIVE
+MsBackendMzR <|-- MW
+
+@enduml

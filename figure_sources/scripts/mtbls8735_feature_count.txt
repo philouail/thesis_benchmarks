@@ -1,0 +1,4 @@
+features: 1878
+chromPeaks: 21247
+samples: 10
+phenotypes: CVD,CTR,CTR,CVD,CTR,CVD,QC,QC,QC,QC

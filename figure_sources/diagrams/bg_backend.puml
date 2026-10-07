@@ -1,0 +1,56 @@
+@startuml
+' Pedagogical backend-pattern diagram for the background chapter, drawn in the
+' same class-diagram style as the Chapter 4 figures: a stable user-facing class
+' holds in one slot an interchangeable backend object that decides where the
+' data actually live.
+'
+' Checked against the sources:
+'   Spectra/R/Spectra.R:369-383             slot backend = "MsBackend"
+'   Chromatograms/R/Chromatograms.R:280-287 slot backend = "ChromBackend"
+'   Spectra/R/MsBackend.R:937-943           MsBackend contains "VIRTUAL"
+'   Chromatograms/R/ChromBackend.R:529-535  ChromBackend contains "VIRTUAL"
+' The three backend boxes are storage roles, not class names: each stands for a
+' concrete subclass of the virtual backend class (stated in the figure caption).
+' Smetana layout: renders without a Graphviz/dot installation.
+!pragma layout smetana
+skinparam shadow false
+skinparam linetype ortho
+skinparam nodesep 26
+skinparam ranksep 36
+skinparam class {
+  BackgroundColor White
+  BorderColor #777777
+  ArrowColor #555555
+}
+skinparam package {
+  BackgroundColor #fafafa
+  BorderColor #aaaaaa
+}
+hide empty members
+hide <<written once>> circle
+hide <<role>> circle
+hide <<role>> stereotype
+
+class "Analysis code" as A <<written once>>
+class "Spectra / Chromatograms" as I <<S4 class>> {
+  backend
+  --
+  intensity()
+  mz()
+  filter*()
+}
+abstract class "MsBackend / ChromBackend" as B <<virtual>>
+
+together {
+  class "in memory" as M <<role>>
+  class "on disk\n(mzML via mzR)" as D <<role>>
+  class "remote archive\n(downloaded on demand)" as R <<role>>
+}
+
+A ..> I : calls intensity(x), mz(x), ...
+I *-- "1" B : backend slot
+B <|-- M
+B <|-- D
+B <|-- R
+
+@enduml

@@ -1,0 +1,78 @@
+@startuml
+' Pedagogical S4 diagram for the background chapter: a virtual base class fixes
+' an interface, concrete classes extend it with their own typed slots, and a
+' generic function dispatches on the class of its argument.
+'
+' Every class, slot and generic below is taken verbatim from the Spectra
+' package sources:
+'   MsBackend          -- R/MsBackend.R:937-943 (contains = "VIRTUAL";
+'                         slots readonly, version)
+'                         generics: peaksData() :1040, intensity() :1518,
+'                         mz() :1691, rtime() :1819
+'   MsBackendMemory    -- R/MsBackendMemory.R:21-30 (contains = "MsBackend")
+'                         intensity() :214, mz() :326, rtime() :459
+'   MsBackendDataFrame -- R/MsBackendDataFrame.R:15-22 (contains = "MsBackend")
+'                         peaksData() :110, intensity() :200, mz() :308,
+'                         rtime() :397
+'   MsBackendMzR       -- R/MsBackendMzR.R:22-24 (contains = "MsBackendDataFrame",
+'                         no slots of its own; file paths live in the
+'                         dataStorage column of the inherited spectraData,
+'                         see R/MsBackendMzR.R:30, 79, 98)
+'                         peaksData() :91, intensity() :112, mz() :132
+' Smetana layout: renders without a Graphviz/dot installation.
+!pragma layout smetana
+left to right direction
+skinparam shadow false
+skinparam linetype ortho
+skinparam nodesep 24
+skinparam ranksep 34
+skinparam class {
+  BackgroundColor White
+  BorderColor #777777
+  ArrowColor #555555
+}
+
+abstract class MsBackend <<virtual>> {
+  readonly : logical
+  version : character
+  --
+  peaksData()
+  intensity()
+  mz()
+  rtime()
+}
+
+class MsBackendMemory <<in memory>> {
+  spectraData : data.frame
+  peaksData : list
+  peaksDataFrame : list
+  --
+  intensity()
+  mz()
+  rtime()
+}
+
+class MsBackendDataFrame <<in memory>> {
+  spectraData : DataFrame
+  peaksVariables : character
+  --
+  peaksData()
+  intensity()
+  mz()
+  rtime()
+}
+
+class MsBackendMzR <<on disk>> {
+  peaksData()
+  intensity()
+  mz()
+}
+
+MsBackend <|-- MsBackendMemory
+MsBackend <|-- MsBackendDataFrame
+MsBackendDataFrame <|-- MsBackendMzR
+
+
+
+
+@enduml

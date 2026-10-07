@@ -1,0 +1,94 @@
+CPU: 13th Gen Intel(R) Core(TM) i7-13700H
+Logical cores: 20
+RAM total (GB): 31.8
+
+R version 4.6.0 (2026-04-24 ucrt)
+Platform: x86_64-w64-mingw32/x64
+Running under: Windows 11 x64 (build 26200)
+
+Matrix products: default
+  LAPACK version 3.12.1
+
+locale:
+[1] LC_COLLATE=English_United Kingdom.utf8 
+[2] LC_CTYPE=English_United Kingdom.utf8   
+[3] LC_MONETARY=English_United Kingdom.utf8
+[4] LC_NUMERIC=C                           
+[5] LC_TIME=English_United Kingdom.utf8    
+
+time zone: Europe/Paris
+tzcode source: internal
+
+attached base packages:
+[1] stats4    stats     graphics  grDevices utils     datasets  methods  
+[8] base     
+
+other attached packages:
+ [1] dplyr_1.2.1                 tidyr_1.3.2                
+ [3] ggplot2_4.0.3               alabaster.base_1.13.1      
+ [5] qs2_0.2.2                   SpectraStash_0.97.6        
+ [7] MsStash_0.99.0              MsBackendMetaboLights_1.7.4
+ [9] Spectra_1.23.3              BiocParallel_1.47.0        
+[11] S4Vectors_0.51.5            BiocGenerics_0.59.10       
+[13] generics_0.1.4             
+
+loaded via a namespace (and not attached):
+  [1] DBI_1.3.0                   httr2_1.3.0                
+  [3] rlang_1.3.0                 magrittr_2.0.5             
+  [5] clue_0.3-68                 MassSpecWavelet_1.79.2     
+  [7] otel_0.2.0                  matrixStats_1.5.0          
+  [9] compiler_4.6.0              RSQLite_3.53.3             
+ [11] PTMods_1.1.0                systemfonts_1.3.2          
+ [13] vctrs_0.7.3                 reshape2_1.4.5             
+ [15] stringr_1.6.0               ProtGenerics_1.45.0        
+ [17] pkgconfig_2.0.3             MetaboCoreUtils_1.21.1     
+ [19] crayon_1.5.3                fastmap_1.2.0              
+ [21] dbplyr_2.6.0                XVector_0.53.0             
+ [23] labeling_0.4.3              rmarkdown_2.31             
+ [25] preprocessCore_1.75.0       xcms_4.11.1                
+ [27] ragg_1.5.2                  purrr_1.2.2                
+ [29] bit_4.6.0                   xfun_0.60                  
+ [31] MultiAssayExperiment_1.39.0 cachem_1.1.0               
+ [33] jsonlite_2.0.0              progress_1.2.3             
+ [35] blob_1.3.0                  rhdf5filters_1.25.0        
+ [37] DelayedArray_0.39.3         Rhdf5lib_2.1.0             
+ [39] parallel_4.6.0              prettyunits_1.2.0          
+ [41] cluster_2.1.8.2             R6_2.6.1                   
+ [43] stringi_1.8.7               RColorBrewer_1.1-3         
+ [45] limma_3.69.2                GenomicRanges_1.65.1       
+ [47] iterators_1.0.14            Rcpp_1.1.2                 
+ [49] Seqinfo_1.3.0               SummarizedExperiment_1.43.0
+ [51] knitr_1.51                  snow_0.4-4                 
+ [53] IRanges_2.47.2              Matrix_1.7-5               
+ [55] igraph_2.3.3                tidyselect_1.2.1           
+ [57] abind_1.4-8                 yaml_2.3.12                
+ [59] stringfish_0.19.0           doParallel_1.0.17          
+ [61] affy_1.91.0                 codetools_0.2-20           
+ [63] curl_7.1.0                  lattice_0.22-9             
+ [65] tibble_3.3.1                plyr_1.8.9                 
+ [67] Biobase_2.73.1              withr_3.0.3                
+ [69] S7_0.2.2                    evaluate_1.0.5             
+ [71] RcppParallel_5.1.11-2       BiocFileCache_3.3.0        
+ [73] alabaster.schemas_1.13.0    BiocManager_1.30.27        
+ [75] affyio_1.83.0               pillar_1.11.1              
+ [77] filelock_1.0.3              MatrixGenerics_1.25.0      
+ [79] foreach_1.5.2               MALDIquant_1.22.3          
+ [81] MSnbase_2.39.4              ncdf4_1.24                 
+ [83] hms_1.1.4                   scales_1.4.0               
+ [85] MsExperiment_1.15.0         glue_1.8.1                 
+ [87] MsFeatures_1.21.0           lazyeval_0.2.3             
+ [89] tools_4.6.0                 mzID_1.51.0                
+ [91] data.table_1.18.4           vsn_3.81.0                 
+ [93] QFeatures_1.23.1            mzR_2.47.0                 
+ [95] XML_3.99-0.23               fs_2.1.0                   
+ [97] rhdf5_2.57.1                grid_4.6.0                 
+ [99] impute_1.87.0               MsCoreUtils_1.25.4         
+[101] PSMatch_1.17.1              cli_3.6.6                  
+[103] textshaping_1.0.5           S4Arrays_1.13.0            
+[105] AnnotationFilter_1.37.0     pcaMethods_2.5.0           
+[107] gtable_0.3.6                digest_0.6.39              
+[109] SparseArray_1.13.2          htmlwidgets_1.6.4          
+[111] farver_2.1.2                memoise_2.0.1              
+[113] htmltools_0.5.9             lifecycle_1.0.5            
+[115] statmod_1.5.2               bit64_4.8.2                
+[117] MASS_7.3-65                

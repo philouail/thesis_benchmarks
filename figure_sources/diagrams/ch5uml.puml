@@ -1,0 +1,60 @@
+@startuml
+' Smetana layout: renders without a Graphviz/dot installation.
+' Green fill = developed in this thesis.
+!pragma layout smetana
+title RuSirius: the R interface to SIRIUS
+skinparam shadow false
+skinparam linetype ortho
+skinparam nodesep 18
+skinparam ranksep 30
+skinparam class {
+  BackgroundColor White
+  BorderColor #777777
+  ArrowColor #555555
+}
+
+class Sirius #line:2e7d32;back:e8f5e9 {
+  +api : RSirius
+  +sdk : RSirius
+  +projectId : character
+  +featureMap : data.frame
+  --
+  +import(spectra, ms_column_name)
+  +run(... : Param)
+  +results()
+  +summary()
+  +mapFeatures()
+}
+abstract class Param <<ProtGenerics>>
+class formulaIdParam #line:2e7d32;back:e8f5e9
+class zodiacParam #line:2e7d32;back:e8f5e9
+class structureDbSearchParam #line:2e7d32;back:e8f5e9
+class predictParam #line:2e7d32;back:e8f5e9
+class deNovoStructureParam #line:2e7d32;back:e8f5e9
+class spectraMatchingParam #line:2e7d32;back:e8f5e9
+
+class Spectra <<Spectra>> {
+  MS1 + MS2 spectra
+}
+class RSirius <<generated REST client>>
+class "SIRIUS 6" as SIRIUS <<external application>>
+
+Param <|-- formulaIdParam
+Param <|-- zodiacParam
+Param <|-- structureDbSearchParam
+Param <|-- predictParam
+Param <|-- deNovoStructureParam
+Param <|-- spectraMatchingParam
+
+Sirius *-- RSirius : api / sdk
+Sirius ..> Param : run()
+Sirius ..> Spectra : import()
+RSirius ..> SIRIUS : REST API
+
+note as N1
+  Green = developed in this thesis.
+  Attributes of the *Param classes are omitted:
+  each exposes the full set of parameters offered
+  by the SIRIUS REST API for its tool.
+end note
+@enduml

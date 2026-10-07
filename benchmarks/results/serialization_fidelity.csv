@@ -1,0 +1,4 @@
+"method","n_spectra","mz","intensity","rtime","spectra_variables","differing_variables","dropped_all_NA_variables"
+"saveRDS",2000,"identical","identical","identical","equal","",""
+"qs2",2000,"identical","identical","identical","equal","",""
+"alabaster",2000,"identical","identical","identical","differ","scanIndex","electronBeamEnergy, mergedScan, mergedResultScanNum, mergedResultStartScanNum, mergedResultEndScanNum, filterString, ionMobilityDriftTime, scanWindowLowerLimit, scanWindowUpperLimit"

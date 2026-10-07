@@ -1,0 +1,538 @@
+---
+title: "Microbenchmark: Architectural Justification"
+subtitle: "Performance analysis of list-of-data.frames design for Chromatograms"
+author: "Philippine Louail"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    code-tools: true
+    embed-resources: true
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+---
+
+## System Information
+
+```{r}
+#| label: system-info-early
+#| code-fold: true
+cat("CPU Cores:", parallel::detectCores(), "\n")
+cat("R Version:", R.version$version.string, "\n")
+cat("Platform:", R.version$platform, "\n")
+if (requireNamespace("Chromatograms", quietly = TRUE)) {
+  cat("Chromatograms Version:",
+      as.character(packageVersion("Chromatograms")), "\n")
+}
+```
+
+## Motivation
+
+The `Chromatograms` package stores chromatographic peaks data as a list of
+`data.frame`s — one per chromatogram — rather than a single large matrix.
+This analysis provides empirical justification for that design choice.
+
+Chromatographic analysis (peak picking, integration, smoothing, similarity
+scoring) operates primarily on vectors of intensity or retention time within
+a single chromatogram. The alternative matrix layout would optimize for
+cross-chromatogram comparisons at the cost of the far more frequent
+single-chromatogram operations.
+
+We benchmark:
+
+1. Columnar access — extracting the intensity vector from a single
+   chromatogram (the dominant operation).
+2. Row access — extracting a single data point across all variables
+   (rare in practice).
+3. Scaling behaviour — how the advantage holds as chromatogram length grows.
+
+## Overview: Measurement Scales
+
+All timing measurements in this document use nanoseconds (ns) for reporting,
+which is appropriate for per-operation latencies in the microsecond to
+nanosecond range. Memory measurements use megabytes (MB) for practical
+discussion of object footprints.
+```{r}
+#| label: load-microbenchmark
+library(microbenchmark)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+```{r}
+#| label: inline-helpers
+#| include: false
+## Helpers for the numbers quoted in the prose. Medians are taken from
+## summary(<microbenchmark>) in nanoseconds and rounded to the nearest 100 ns;
+## ratios are rounded to one decimal.
+med_ns <- function(mb, expr) {
+  s <- summary(mb, unit = "ns")
+  s$median[as.character(s$expr) == expr]
+}
+scaling_med <- function(structure, n) {
+  scaling_summary$median_ns[scaling_summary$expr == structure &
+                              scaling_summary$n_points == n]
+}
+speedup_df <- function(n) scaling_med("matrix", n) / scaling_med("df", n)
+fmt_ns <- function(x) formatC(round(x, -2), format = "d", big.mark = ",")
+fmt_x  <- function(x) formatC(x, format = "f", digits = 1, big.mark = ",")
+## Median of S4 slot access via `@`, measured in a separate benchmark
+## (not run in this document); used only for the appendix comparison.
+s4_slot_ns <- 200
+```
+
+## 1. Basic Column Access Benchmark
+
+We simulate a single chromatogram of typical length (1 000 data points) stored
+as either a matrix, a data.frame, or a data.table, then measure columnar
+extraction.
+
+```{r}
+#| label: basic-benchmark
+set.seed(42)
+n_rows <- 1000L
+
+# Matrix representation
+mat <- matrix(runif(n_rows * 2), ncol = 2)
+colnames(mat) <- c("rtime", "intensity")
+
+# data.frame representation (what Chromatograms uses)
+df <- data.frame(rtime = runif(n_rows), intensity = runif(n_rows))
+
+# data.table representation
+dt <- as.data.table(df)
+
+mb_basic <- microbenchmark(
+  matrix_col_name   = mat[, "intensity"],
+  matrix_col_index  = mat[, 2L],
+  df_dollar         = df$intensity,
+  df_bracket        = df[["intensity"]],
+  dt_dollar         = dt$intensity,
+  dt_bracket        = dt[["intensity"]],
+  times = 10000L,
+  unit = "nanoseconds"
+)
+
+mb_basic
+```
+
+```{r}
+#| label: fig-basic-benchmark
+#| fig-cap: "Column access latency: matrix vs data.frame vs data.table (1 000 rows)"
+autoplot(mb_basic) +
+  labs(
+    x = "Time (ns)", y = NULL,
+    title = "Column Access: Matrix vs data.frame vs data.table"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+#| label: basic-headline
+## Medians of this run and the storage-layout ratio quoted in the thesis:
+## named matrix column extraction relative to data.frame `$` access.
+med_basic <- sapply(split(mb_basic$time, mb_basic$expr), median)
+knitr::kable(
+  data.frame(accessor = names(med_basic), median_ns = med_basic,
+             relative_to_df_dollar = med_basic / med_basic[["df_dollar"]]),
+  digits = 2, row.names = FALSE,
+  caption = "Column access, 1 000 rows: medians of this run (ns)")
+cat(sprintf("Storage-layout ratio (matrix_col_name / df_dollar): %.2f\n",
+            med_basic[["matrix_col_name"]] / med_basic[["df_dollar"]]))
+```
+
+### Interpretation
+
+The results show an advantage for data.frame column access via the $ operator
+(median ≈ `r fmt_ns(med_ns(mb_basic, "df_dollar"))` ns) compared to named matrix column extraction
+(median ≈ `r fmt_ns(med_ns(mb_basic, "matrix_col_name"))` ns) — a `r fmt_x(med_ns(mb_basic, "matrix_col_name") / med_ns(mb_basic, "df_dollar"))`× speedup. Bracket-based data.frame access
+(df[["col"]], median ≈ `r fmt_ns(med_ns(mb_basic, "df_bracket"))` ns) performs similarly to matrix indexing,
+confirming that the speedup is specific to the $ operator. Internally, $
+bypasses dimension checking and performs a direct list-element lookup on the
+underlying data.frame structure, whereas mat[, "col"] must resolve dimension
+names, validate indices, and allocate a result vector.
+
+data.table $ access performs comparably to data.frame $ access, since
+data.table inherits from data.frame and the $ operator follows the same
+list-element lookup path. The bracket accessor dt[["col"]] likewise performs
+similarly to df[["col"]]. This confirms that data.table does not provide an
+additional columnar access advantage over data.frame for this simple
+extraction pattern — both benefit from the same underlying list structure.
+
+Since chromatographic workflows access rtime and intensity columns thousands
+of times during peak detection and integration, this constant-factor
+advantage over matrices accumulates.
+
+## 2. Row Access Benchmark
+
+For completeness, we also benchmark row access — extracting a single scan across
+all variables. This is the operation where matrices traditionally excel, but it
+is rarely needed in chromatographic workflows.
+```{r}
+#| label: row-benchmark
+mb_row <- microbenchmark(
+  matrix_row = mat[500L, ],
+  df_row     = df[500L, ],
+  dt_row     = dt[500L, ],
+  times = 10000L,
+  unit = "nanoseconds"
+)
+
+mb_row
+```
+
+```{r}
+#| label: fig-row-benchmark
+#| fig-cap: "Row access latency: matrix vs data.frame vs data.table"
+autoplot(mb_row) +
+  labs(
+    x = "Time (ns)", y = NULL,
+    title = "Row Access: Matrix vs data.frame vs data.table"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+### Interpretation
+
+Matrix row access (median ≈ `r fmt_ns(med_ns(mb_row, "matrix_row"))` ns) is substantially faster than
+data.frame row access (median ≈ `r fmt_ns(med_ns(mb_row, "df_row"))` ns) — roughly `r fmt_x(med_ns(mb_row, "df_row") / med_ns(mb_row, "matrix_row"))`× faster. This is
+because a matrix stores all values in a single contiguous memory block, so
+extracting a row is a simple pointer-offset calculation. In contrast, a
+data.frame row slice must extract one element from each column list and
+assemble them into a new data.frame. data.table row access
+(median ≈ `r fmt_ns(med_ns(mb_row, "dt_row"))` ns) is slower still than data.frame row access, because the
+data.table `[` method adds argument-processing overhead on top of the same
+column-oriented internal storage.
+
+However, this trade-off is deliberate. Chromatographic analysis pipelines
+rarely need cross-variable row access. Operations such as peak detection,
+integration, FWHM estimation, and similarity scoring all work on vectors of
+intensity or rtime. The only scenario where row access might be relevant is
+extracting a single scan point across multiple channels, which is uncommon.
+Optimizing for the dominant access pattern (columnar) at the cost of the rare
+pattern (row-based) is therefore the correct engineering decision.
+
+## 3. Scaling Behaviour
+
+How does the column-access advantage scale with chromatogram length?
+
+```{r}
+#| label: scaling-benchmark
+sizes <- c(100, 500, 1000, 5000, 10000, 50000)
+
+scaling_results <- lapply(sizes, function(n) {
+  m <- matrix(runif(n * 2), ncol = 2)
+  colnames(m) <- c("rtime", "intensity")
+  d <- data.frame(rtime = m[, 1], intensity = m[, 2])
+  dtb <- as.data.table(d)
+
+  mb <- microbenchmark(
+    matrix     = m[, "intensity"],
+    df         = d$intensity,
+    data.table = dtb$intensity,
+    times  = 5000L,
+    unit   = "nanoseconds"
+  )
+
+  mb |>
+    as.data.frame() |>
+    mutate(n_points = n)
+})
+
+scaling_df <- bind_rows(scaling_results)
+```
+
+```{r}
+#| label: fig-scaling
+#| fig-cap: "Column access time vs chromatogram length"
+scaling_summary <- scaling_df |>
+  group_by(expr, n_points) |>
+  summarise(
+    median_ns = median(time),
+    q25 = quantile(time, 0.25),
+    q75 = quantile(time, 0.75),
+    .groups = "drop"
+  )
+
+ggplot(scaling_summary, aes(x = n_points, y = median_ns, colour = expr)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  geom_ribbon(aes(ymin = q25, ymax = q75, fill = expr), alpha = 0.15,
+              colour = NA) +
+  scale_x_log10(labels = scales::comma) +
+  scale_y_log10(labels = scales::comma) +
+  labs(
+    x = "Chromatogram Length (data points)",
+    y = "Median Access Time (ns)",
+    colour = "Structure",
+    fill = "Structure",
+    title = "Column Access Scaling: Matrix vs data.frame vs data.table"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+#| label: speedup-table
+scaling_summary |>
+  select(expr, n_points, median_ns) |>
+  pivot_wider(names_from = expr, values_from = median_ns) |>
+  mutate(
+    speedup_df = matrix / df,
+    speedup_dt = matrix / data.table
+  ) |>
+  knitr::kable(
+    digits = 1,
+    col.names = c("N points", "Matrix (ns)", "data.frame (ns)",
+                  "data.table (ns)", "Speedup df (×)", "Speedup dt (×)"),
+    caption = "Column access speedup over matrix"
+  )
+```
+
+### Interpretation
+
+The scaling results demonstrate that the data.frame column
+access time is essentially constant regardless of the number of rows
+(≈ `r fmt_ns(min(scaling_summary$median_ns[scaling_summary$expr == "df"]))`–`r fmt_ns(max(scaling_summary$median_ns[scaling_summary$expr == "df"]))` ns across all sizes), while matrix column extraction time grows
+linearly with chromatogram length (from ≈ `r fmt_ns(scaling_med("matrix", 100))` ns at 100 points to
+≈ `r fmt_ns(scaling_med("matrix", 50000))` ns at 50 000 points).
+
+This is because $ returns a reference to the existing column vector without
+copying, whereas mat[, col] must allocate a new vector and copy the selected
+column from the contiguous matrix memory block. As chromatogram length
+increases, the copy cost grows proportionally.
+
+The practical implication is significant: at 5 000 data points (typical for
+UHPLC data), data.frame access is `r fmt_x(speedup_df(5000))`× faster; at 50 000 points (common for
+high-resolution full-scan MS data), the speedup reaches `r fmt_x(speedup_df(50000))`×. This means the
+data.frame design becomes more advantageous precisely for the high-resolution
+data where performance matters most.
+
+## 4. List of data.frames vs data.tables vs Matrices (Realistic Scenario)
+
+In a real Chromatograms object, we store many chromatograms as a list. The
+realistic design question is: should each element be a data.frame (with
+named columns rtime, intensity), a data.table, or a 2-column matrix?
+
+We compare these three plausible designs for the dominant operation — extracting
+the intensity vector of a single chromatogram from the collection.
+
+```{r}
+#| label: realistic-benchmark
+n_chrom <- 1000L
+n_pts   <- 1000L
+
+# List of data.frames (actual Chromatograms design)
+list_df <- lapply(seq_len(n_chrom), function(i) {
+  data.frame(
+    rtime     = sort(runif(n_pts, 0, 600)),
+    intensity = abs(rnorm(n_pts, mean = 1000, sd = 500))
+  )
+})
+
+# List of matrices (plausible alternative)
+list_mat <- lapply(list_df, function(d) {
+  m <- as.matrix(d)
+  colnames(m) <- c("rtime", "intensity")
+  m
+})
+
+# List of data.tables (plausible alternative)
+list_dt <- lapply(list_df, as.data.table)
+
+mb_realistic <- microbenchmark(
+  list_df_dollar    = list_df[[500]]$intensity,
+  list_df_bracket   = list_df[[500]][["intensity"]],
+  list_dt_dollar    = list_dt[[500]]$intensity,
+  list_dt_bracket   = list_dt[[500]][["intensity"]],
+  list_mat_name     = list_mat[[500]][, "intensity"],
+  list_mat_index    = list_mat[[500]][, 2L],
+  times = 10000L,
+  unit = "nanoseconds"
+)
+
+mb_realistic
+```
+
+```{r}
+#| label: fig-realistic
+#| fig-cap: "Accessing intensity of one chromatogram from a collection of 1 000"
+autoplot(mb_realistic) +
+  labs(
+    x = "Time (ns)", y = NULL,
+    title = "List of data.frames vs data.tables vs Matrices"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+#| label: realistic-headline
+med_real <- sapply(split(mb_realistic$time, mb_realistic$expr), median)
+knitr::kable(
+  data.frame(accessor = names(med_real), median_ns = med_real,
+             relative_to_list_df_dollar = med_real / med_real[["list_df_dollar"]]),
+  digits = 2, row.names = FALSE,
+  caption = "One chromatogram from a list of 1 000: medians of this run (ns)")
+```
+
+### Interpretation
+
+Even in a realistic list-based scenario with 1 000 chromatograms, data.frame
+$ access (median ≈ `r fmt_ns(med_ns(mb_realistic, "list_df_dollar"))` ns) remains the fastest approach — `r fmt_x(med_ns(mb_realistic, "list_mat_index") / med_ns(mb_realistic, "list_df_dollar"))`× faster
+than the best matrix accessor (mat[, 2] by integer index, median ≈ `r fmt_ns(med_ns(mb_realistic, "list_mat_index"))` ns)
+and `r fmt_x(med_ns(mb_realistic, "list_mat_name") / med_ns(mb_realistic, "list_df_dollar"))`× faster than named matrix access (mat[, "intensity"],
+median ≈ `r fmt_ns(med_ns(mb_realistic, "list_mat_name"))` ns). data.table $ access performs comparably to data.frame $
+access, confirming that the list-element lookup mechanism is shared.
+Bracket-based access for both data.frame and data.table performs comparably
+to matrix indexing, confirming that the advantage is specific to the $
+operator.
+
+This benchmark is the most directly relevant to the Chromatograms package
+design, since it mirrors the actual storage layout: a list of per-chromatogram
+containers. The results confirm that the list-of-data.frames architecture
+provides consistently faster columnar access than a list-of-matrices, while
+data.table offers no additional advantage for this access pattern. Since
+data.table adds dependency weight without a performance benefit for
+per-chromatogram column extraction, the data.frame choice is the most
+parsimonious.
+
+## 5. Memory Overhead Comparison
+
+The list-of-data.frames representation also has implications for memory. Notably,
+it supports variable-length chromatograms without padding, which is critical
+for real data where chromatograms span different RT ranges. We compare the
+memory footprint of list-of-data.frames vs list-of-matrices for both
+fixed-length and variable-length chromatograms.
+
+```{r}
+#| label: memory-comparison
+# Variable-length chromatograms (realistic)
+set.seed(42)
+var_list_df <- lapply(seq_len(n_chrom), function(i) {
+  n <- sample(200:2000, 1)
+  data.frame(
+    rtime     = sort(runif(n, 0, 600)),
+    intensity = abs(rnorm(n, 1000, 500))
+  )
+})
+
+var_list_mat <- lapply(var_list_df, function(d) {
+  m <- as.matrix(d)
+  colnames(m) <- c("rtime", "intensity")
+  m
+})
+
+var_list_dt <- lapply(var_list_df, as.data.table)
+
+# List of data.tables (fixed-length, from earlier)
+list_dt_fixed <- lapply(list_df, as.data.table)
+
+get_size_mb <- function(x) {
+  as.numeric(object.size(x)) / 1024^2
+}
+
+memory_df <- data.frame(
+  Scenario = c("Fixed-length (1 000 × 1 000 pts)",
+               "Variable-length (1 000 × 200–2 000 pts)"),
+  `data.frame (MB)` = round(c(get_size_mb(list_df),
+                               get_size_mb(var_list_df)), 1),
+  `data.table (MB)` = round(c(get_size_mb(list_dt_fixed),
+                               get_size_mb(var_list_dt)), 1),
+  `matrix (MB)` = round(c(get_size_mb(list_mat),
+                           get_size_mb(var_list_mat)), 1),
+  check.names = FALSE
+)
+
+knitr::kable(
+  memory_df,
+  caption = "Memory footprint comparison across storage representations"
+)
+```
+
+### Interpretation
+
+The memory comparison shows that data.frame and data.table overhead relative
+to matrices is negligible in practice — all three list-based representations
+have comparable footprints. The small overhead arises from per-element
+metadata (column names, row names, class attributes) stored once per
+chromatogram — a constant cost dwarfed by the actual data vectors.
+data.table's additional internal attributes (e.g., `.internal.selfref`) add
+a marginal cost that is not meaningfully different at this scale.
+
+Crucially, none of the list-based representations require padding. A single
+large matrix storing all chromatograms would need every row to have the same
+number of columns, forcing shorter chromatograms to be padded with NA values.
+For a dataset where chromatogram lengths vary from 200 to 2 000 points,
+padding would inflate memory usage substantially. The list-of-data.frames
+design avoids this waste entirely while paying virtually no overhead compared
+to list-of-matrices or list-of-data.tables.
+
+## Conclusion
+
+The benchmarks confirm that the list-of-data.frames design is well suited for
+the Chromatograms package. The `$` accessor provides `r fmt_x(speedup_df(100))`–`r fmt_x(speedup_df(50000))`× faster column
+extraction than matrices (scaling with chromatogram length), while data.table
+offers no additional speed advantage since both share the same list-element
+lookup. Memory overhead across all three representations is negligible, and
+only the list-based designs handle variable-length chromatograms without
+wasteful padding. The sole trade-off — slower row access compared to
+matrices — is irrelevant in practice, as chromatographic workflows operate
+on per-column vectors. Choosing data.frame over data.table avoids an external
+dependency with no performance cost.
+
+## Appendix: Why Not S4 Slots?
+
+A natural alternative to data.frames for per-chromatogram storage is an S4
+class with dedicated slots — e.g., `rtime` and `intensity` as separate
+numeric vectors. Micro-benchmarks (available in a separate branch) show that
+S4 slot access via `@` is indeed the fastest read accessor (~`r fmt_ns(s4_slot_ns)` ns median),
+roughly `r fmt_x(med_ns(mb_basic, "df_dollar") / s4_slot_ns)`× faster than `data.frame` `$` access. However, several structural
+constraints make S4 unsuitable for the `peaksData` representation.
+
+**Fixed schema.** An S4 class must declare its slots at definition time.
+The `peaksData` contract in `Chromatograms` supports arbitrary peaks
+variables, not just `rtime` and `intensity`, but also `mz` (for 3D
+chromatograms), annotation columns, or any user-defined variable. Adding a
+new variable to an S4 class requires redefining the class itself; adding a
+column to a data.frame is trivial. Moreover, different chromatograms within
+the same collection may carry different sets of peaks variables, something
+data.frames handle natively but S4 cannot.
+
+**Access method overhead.** While raw `@` access is fast, S4 objects in a
+package API are never accessed via `@` directly — they require formal
+accessor methods (`intensity()`, `rtime()`, etc.). Each accessor call
+involves S4 method dispatch, which adds overhead per invocation. In a
+pipeline that repeatedly accesses intensity and rtime across thousands of
+chromatograms, this repeated dispatch erodes the raw slot-access advantage.
+data.frame `$` access requires no method dispatch: it is a direct
+list-element lookup.
+
+**Paired access pattern.** Chromatographic operations typically consume
+`rtime` and `intensity` together (e.g., peak detection, integration,
+plotting). A data.frame naturally groups these as columns of the same
+object, accessible in a single `peaksData()[[i]]` call. With S4 slots, each
+variable requires a separate accessor, doubling the dispatch overhead for the
+most common access pattern.
+
+**Nested S4 scalability.** A `Chromatograms` object stores hundreds to
+thousands of chromatograms. Storing these as a `list` of S4 objects
+introduces per-element S4 overhead (class metadata, validity infrastructure)
+that compounds across the collection. R's garbage collector and serialization
+routines also handle large lists of S4 objects less efficiently than lists of
+data.frames, which are simple named lists internally.
+
+In summary, S4 slots offer faster raw read access but cannot match the
+flexibility, interoperability, and ecosystem compatibility that data.frames
+provide. The ~`r fmt_ns(med_ns(mb_basic, "df_dollar") - s4_slot_ns)` ns per-access difference is irrelevant at pipeline scale.
+
+## Session Info
+
+```{r}
+#| label: session-info
+sessionInfo()
+```

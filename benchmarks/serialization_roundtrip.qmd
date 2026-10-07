@@ -1,0 +1,621 @@
+---
+title: "Serialization benchmark: durability versus speed for MS objects"
+subtitle: "Round-trip cost and fidelity of saveRDS, qs2 and alabaster for Spectra objects"
+author:
+  - "Philippine Louail"
+  - "Johannes Rainer"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    code-tools: true
+    code-overflow: wrap
+    embed-resources: true
+    format-links: false
+    theme: cosmo
+  pdf:
+    toc: true
+    toc-depth: 3
+    documentclass: article
+    geometry:
+      - margin=1in
+    fontsize: 11pt
+    number-sections: false
+    fig-pos: 'H'
+    code-overflow: wrap
+    include-in-header:
+      text: |
+        \usepackage{fvextra}
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+execute:
+  warning: false
+  message: false
+---
+
+**Benchmark document of the doctoral thesis (thesis repository, `benchmarks/`):**
+
+**Interoperable serialisation of mass spectrometry objects in R**
+
+Philippine Louail^1,2,\*^, Johannes Rainer^1^
+
+^1^ Institute for Biomedicine, Eurac Research, Bolzano, Italy
+^2^ Chair for Bioinformatics, Friedrich-Schiller-University Jena, 07743 Jena, Germany
+
+\* Corresponding author: philippine.louail@outlook.com
+
+---
+
+> **Note on the environment.** `SpectraStash` requires the development
+> `Spectra` (>= 1.23.2). To avoid disturbing a release-based installation,
+> install the closure into a separate library, e.g.
+> `install.packages(c("SpectraStash","MsStash","qs2","alabaster.base","MsBackendMetaboLights"),`
+> `lib = "path/to/isolated/lib", dependencies = NA)` with the
+> `rformassspectrometry` and `bioc` r-universe repositories, and point the
+> environment variable `SERBENCH_LIB` at that library before rendering. Plotting
+> additionally needs `ggplot2`, `tidyr` and `scales`.
+>
+> **Note on the data.** The benchmark serialises real spectra: the ten mzML
+> files of the MetaboLights study MTBLS8735 (the *Metabonaut* plasma example),
+> retrieved with `MsBackendMetaboLights`. That package keeps the files in the
+> local `BiocFileCache`, so they are downloaded only on the first run.
+>
+> **Note on outputs.** Everything this document writes (the results tables,
+> the session information and the figure) goes to the `results/` folder next to
+> this file, and nowhere else. The serialised objects themselves are written to a
+> temporary directory and discarded.
+>
+> **Note on the `alabaster` calls.** The `alabaster` `saveObject()` /
+> `readObject()` methods for `Spectra` are provided by `SpectraStash`. The
+> `xcms` axis below needs `xcmsStash`, which will provide the same methods for
+> `xcms` results but is not yet released; those chunks are therefore set to
+> `eval: false` and will run once `xcmsStash` is available.
+
+## Motivation
+
+Saving an analysis is not the same as being able to read it again in five
+years, on another machine, or from another language. R's native serialisation
+(`saveRDS`) is fast and universal within R, but it is a binary, R-specific
+format that is explicitly discouraged for long-term archival: objects can fail
+to reload after an R upgrade, and S4 objects in particular can lose data
+*silently* when a class definition changes. For results that are meant to be
+deposited, shared, and re-read, durability and portability matter more than raw
+speed.
+
+This document benchmarks three ways of persisting the central object type of the
+R for Mass Spectrometry ecosystem, a `Spectra` object (the same design applies
+to an `xcms` `XcmsExperiment`, see section 6), along two axes:
+
+1. **Cost**: write time, read time, and on-disk size, as object size grows.
+2. **Fidelity and durability**: whether the object round-trips *identically*,
+   and whether the on-disk representation is language-agnostic and
+   human-inspectable (the properties that make it survive version and toolchain
+   changes).
+
+The point is not that the language-agnostic `alabaster` format is fast (it is
+not) but that it occupies a different, and for FAIR data sharing more valuable,
+corner of the trade-off space than the binary formats.
+
+## Methods under test
+
+| Method | Package | Encoding | Language-agnostic | Human-readable / diff-able |
+|---|---|---|---|---|
+| `saveRDS` | base R | binary (gzip) | no | no |
+| `qs2` | `qs2` | binary (optimised) | no (R only) | no |
+| `alabaster` | `alabaster.*` | HDF5 + JSON | yes | partly (JSON only) |
+
+`fst`, `arrow`/`parquet` and `feather` are deliberately excluded from the
+round-trip comparison: they serialise flat, columnar tables rather than whole
+S4 objects, so they cannot persist a `Spectra` or `XcmsExperiment` container in
+one step. They are relevant only to the tabular *parts* of an object and are
+not benchmarked here.
+
+```{r}
+#| label: setup
+#| output: false
+## Optional: point at an isolated library holding the development Spectra
+## closure (see environment note above). Set SERBENCH_LIB to that path.
+.serbench_lib <- Sys.getenv("SERBENCH_LIB")
+if (nzchar(.serbench_lib) && dir.exists(.serbench_lib))
+  .libPaths(c(.serbench_lib, .libPaths()))
+
+.run_start <- Sys.time()
+
+library(Spectra)
+library(MsBackendMetaboLights)
+library(SpectraStash)   # alabaster saveObject() / readObject() for Spectra
+library(MsStash)
+library(qs2)
+library(alabaster.base)
+library(BiocParallel)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+## Loaded only if available (the xcms axis is optional)
+.have_xcms <- requireNamespace("xcms", quietly = TRUE) &&
+  requireNamespace("xcmsStash", quietly = TRUE)
+
+## All outputs of this document go to results/ next to the .qmd, and nowhere
+## else. Quarto knits with the working directory set to the document's folder;
+## knitr::current_input() pins it down when the file is run some other way.
+.doc_dir <- tryCatch(dirname(knitr::current_input(dir = TRUE)),
+                     error = function(e) getwd())
+if (!length(.doc_dir) || is.na(.doc_dir)) .doc_dir <- getwd()
+res_dir <- file.path(.doc_dir, "results")
+dir.create(res_dir, showWarnings = FALSE, recursive = TRUE)
+if (!dir.exists(res_dir))
+  stop("Could not create the results directory '", res_dir, "'.")
+
+## Fixed order, one entry per format: colour, point shape and line type.
+## Binary formats are drawn solid, the language-agnostic one dashed.
+method_levels <- c("saveRDS", "qs2", "alabaster")
+method_colours <- c(
+  "saveRDS"   = "#2a78d6",
+  "qs2"       = "#eb6834",
+  "alabaster" = "#1baf7a"
+)
+method_shapes <- c("saveRDS" = 16, "qs2" = 17, "alabaster" = 15)
+method_linetypes <- c("saveRDS" = "solid", "qs2" = "solid",
+                      "alabaster" = "dashed")
+
+# Directory size helper (bytes): a method may write a file or a directory
+path_size <- function(p) {
+  if (dir.exists(p))
+    sum(file.info(list.files(p, recursive = TRUE, full.names = TRUE))$size,
+        na.rm = TRUE)
+  else file.info(p)$size
+}
+```
+
+## System information
+
+The machine the benchmark ran on; the full `sessionInfo()` is at the end of
+the document and is also written to `results/serialization_sessionInfo.txt`.
+
+```{r}
+#| label: system-info
+#| code-fold: true
+.first_line <- function(x) {
+  x <- trimws(x[nzchar(trimws(x))])
+  if (length(x)) x[1L] else NA_character_
+}
+cpu_model <- function() {
+  tryCatch(switch(Sys.info()[["sysname"]],
+    Windows = .first_line(system2("powershell", c("-NoProfile", "-Command",
+      shQuote("(Get-CimInstance Win32_Processor).Name", type = "cmd")), stdout = TRUE)),
+    Darwin = .first_line(system2("sysctl", c("-n", "machdep.cpu.brand_string"),
+                                 stdout = TRUE)),
+    Linux = sub(".*: ", "", .first_line(grep("model name",
+      readLines("/proc/cpuinfo"), value = TRUE))),
+    NA_character_), error = function(e) NA_character_)
+}
+ram_gb <- function(what = c("total", "free")) {
+  what <- match.arg(what)
+  tryCatch(switch(Sys.info()[["sysname"]],
+    Windows = {
+      prop <- if (what == "total") "TotalVisibleMemorySize" else "FreePhysicalMemory"
+      round(as.numeric(.first_line(system2("powershell", c("-NoProfile",
+        "-Command", shQuote(paste0("(Get-CimInstance Win32_OperatingSystem).",
+                                   prop), type = "cmd")), stdout = TRUE))) / 1024^2, 1)
+    },
+    Linux = {
+      key <- if (what == "total") "MemTotal" else "MemAvailable"
+      l <- grep(key, readLines("/proc/meminfo"), value = TRUE)
+      round(as.numeric(gsub("[^0-9]", "", l)) / 1024^2, 1)
+    },
+    NA_real_), error = function(e) NA_real_)
+}
+sys_info <- data.frame(
+  Property = c("Date of run", "CPU", "Logical cores", "RAM total (GB)",
+               "RAM free at start (GB)", "OS", "R version", "Platform",
+               "Serialisation target (tempdir)"),
+  Value = c(format(.run_start, "%Y-%m-%d %H:%M %Z"), cpu_model(),
+            as.character(parallel::detectCores()),
+            as.character(ram_gb("total")), as.character(ram_gb("free")),
+            utils::osVersion, R.version$version.string, R.version$platform,
+            tempdir()))
+for (pkg in c("Spectra", "MsBackendMetaboLights", "SpectraStash", "MsStash",
+              "qs2", "alabaster.base", "xcms", "xcmsStash")) {
+  if (requireNamespace(pkg, quietly = TRUE))
+    sys_info <- rbind(sys_info, data.frame(
+      Property = paste(pkg, "version"),
+      Value = as.character(packageVersion(pkg))))
+}
+knitr::kable(sys_info, caption = "System information")
+```
+
+## 1. Test objects
+
+We serialise real LC--HRMS data: the ten mzML files of the positive-mode HILIC
+assay of MetaboLights study MTBLS8735 (the *Metabonaut* plasma example, four
+QC pools and six plasma samples). `MsBackendMetaboLights` resolves the files
+through the local `BiocFileCache`: it first looks for them offline and only
+contacts MetaboLights (and downloads what is missing) if they are not cached.
+The spectra are then moved into memory with `setBackend(MsBackendMemory())`,
+so that every format serialises the same fully realised object, peaks
+included.
+
+```{r}
+#| label: load-data
+mtbls_id    <- "MTBLS8735"
+mtbls_assay <- "a_MTBLS8735_LC-MS_positive_hilic_metabolite_profiling.txt"
+.t_load <- Sys.time()
+sps_full <- tryCatch(
+  Spectra(source = MsBackendMetaboLights(), mtblsId = mtbls_id,
+          assayName = mtbls_assay, filePattern = "mzML$", offline = TRUE),
+  error = function(e)
+    Spectra(source = MsBackendMetaboLights(), mtblsId = mtbls_id,
+            assayName = mtbls_assay, filePattern = "mzML$"))
+sps_full <- setBackend(sps_full, MsBackendMemory(), BPPARAM = SerialParam())
+.t_load <- difftime(Sys.time(), .t_load, units = "secs")
+
+n_peaks_per_spectrum <- lengths(sps_full)
+knitr::kable(data.frame(
+  Property = c("Data files", "Spectra", "MS levels", "Peaks (total)",
+               "Peaks per spectrum (median)", "In-memory size (MB)",
+               "Load + setBackend time (s)"),
+  Value = c(length(unique(dataOrigin(sps_full))), length(sps_full),
+            paste(sort(unique(msLevel(sps_full))), collapse = ", "),
+            format(sum(n_peaks_per_spectrum), big.mark = ","),
+            median(n_peaks_per_spectrum),
+            round(as.numeric(object.size(sps_full)) / 1e6, 1),
+            round(as.numeric(.t_load), 1))),
+  caption = "The MTBLS8735 test data")
+```
+
+The benchmark serialises nested subsets of increasing size: the first
+500, 2,000, 5,000 and 8,000 spectra, and all spectra. Files are kept in their
+cache order, so the smaller subsets cover the first sample files.
+
+```{r}
+#| label: size-grid
+## SERBENCH_QUICK=1 runs a fast smoke grid; otherwise the full grid.
+n_grid <- if (nzchar(Sys.getenv("SERBENCH_QUICK"))) c(200, 500) else
+  c(500, 2000, 5000, 8000, length(sps_full))
+n_grid <- sort(unique(pmin(n_grid, length(sps_full))))
+spectra_at <- function(n)
+  if (n >= length(sps_full)) sps_full else sps_full[seq_len(n)]
+n_grid
+```
+
+For the `xcms` axis (via `xcmsStash`, not yet released, hence `eval: false`) one
+would run a standard centWave preprocessing on a subset of files and grow the
+object by the number of samples retained.
+
+```{r}
+#| label: build-xcms
+#| eval: false
+library(xcms)
+mzml_files <- unique(dataOrigin(sps_full))
+# Use a manageable number of files for the preprocessing example
+xf <- readMsExperiment(spectraFiles = head(mzml_files, 6))
+cwp <- CentWaveParam(peakwidth = c(2, 20), ppm = 25, noise = 1000)
+xdata <- findChromPeaks(xf, param = cwp)
+# Grow by subsetting the number of files retained in the object
+xcms_grid <- seq_len(length(fileNames(xdata)))
+xcms_at <- function(k) xdata[, seq_len(k)]  # column = sample
+```
+
+## 2. Methods under test (wrapper functions)
+
+Each method is a pair of `write(obj, path)` / `read(path)` closures plus the
+path it writes to. Keeping them behind a common interface lets the harness stay
+serializer-agnostic.
+
+```{r}
+#| label: method-defs
+methods_spectra <- list(
+  saveRDS = list(
+    write = function(o, p) saveRDS(o, p),
+    read  = function(p) readRDS(p),
+    path  = function(d) file.path(d, "obj.rds")),
+  qs2 = list(
+    write = function(o, p) qs2::qs_save(o, p),
+    read  = function(p) qs2::qs_read(p),
+    path  = function(d) file.path(d, "obj.qs2")),
+  alabaster = list(
+    write = function(o, p) { unlink(p, recursive = TRUE)
+                             alabaster.base::saveObject(o, p) },
+    read  = function(p) alabaster.base::readObject(p),
+    path  = function(d) file.path(d, "obj_alabaster"))
+)
+```
+
+> For an in-memory backend, `SpectraStash` stores the `alabaster` peaks (m/z and
+> intensity matrices) in one HDF5 file and the spectra variables as HDF5/JSON,
+> and reloads the object into an `MsBackendMemory`. As for `saveRDS` and `qs2`,
+> every read time below therefore includes loading all peaks into memory. Where
+> a method fails on an object, the failure is recorded in the `error` column
+> rather than hidden.
+
+## 3. Cost benchmark: write time, read time, on-disk size
+
+```{r}
+#| label: bench-cost
+tmp <- tempfile("serbench"); dir.create(tmp)
+
+## Wall-clock timing over several iterations. We deliberately avoid bench::mark()
+## here: its memory profiling is pathologically slow for methods that write
+## many files (alabaster). Instead each write and each read is timed
+## `reps` times and reported as mean and standard deviation, so the run-to-run
+## variability is visible as error bars in the plots below.
+time_it <- function(expr) {
+  t0 <- proc.time()[["elapsed"]]; force(expr); proc.time()[["elapsed"]] - t0
+}
+reps <- if (nzchar(Sys.getenv("SERBENCH_QUICK"))) 2L else 5L
+bench_one <- function(obj, methods, n, reps = 5L) {
+  out <- lapply(names(methods), function(m) {
+    mm <- methods[[m]]; p <- mm$path(tmp); err <- NA_character_
+    .err <- function(e) { err <<- conditionMessage(e); NULL }
+    ## one untimed warm-up run absorbs cold-start effects (disk cache, GC),
+    ## then take `reps` timed runs and summarise as mean and SD.
+    tryCatch(mm$write(obj, p), error = .err)
+    wts <- tryCatch(replicate(reps, time_it(mm$write(obj, p))),
+                    error = function(e) { .err(e); rep(NA_real_, reps) })
+    sz <- tryCatch(path_size(p), error = function(e) NA_real_)
+    tryCatch(invisible(mm$read(p)), error = .err)
+    rts <- tryCatch(replicate(reps, time_it(mm$read(p))),
+                    error = function(e) { .err(e); rep(NA_real_, reps) })
+    gc()
+    data.frame(method = m, n_spectra = n, n_peaks = if (is(obj, "Spectra")) sum(lengths(obj)) else NA_real_,
+               object_MB = as.numeric(object.size(obj)) / 1e6, reps = reps,
+               write_s = mean(wts), write_sd = sd(wts),
+               read_s  = mean(rts), read_sd  = sd(rts),
+               bytes = sz, MB = sz / 1e6,
+               write_runs_s = paste(signif(wts, 5), collapse = ";"),
+               read_runs_s  = paste(signif(rts, 5), collapse = ";"),
+               error = err)
+  })
+  do.call(rbind, out)
+}
+
+.t_bench <- Sys.time()
+res_spectra <- do.call(rbind, lapply(n_grid, function(n) {
+  r <- bench_one(spectra_at(n), methods_spectra, n, reps = reps)
+  gc()
+  r
+}))
+.t_bench <- difftime(Sys.time(), .t_bench, units = "mins")
+res_spectra$method <- factor(res_spectra$method, levels = method_levels)
+
+write.csv(res_spectra, file.path(res_dir, "serialization_cost.csv"),
+          row.names = FALSE)
+knitr::kable(res_spectra[, c("method", "n_spectra", "n_peaks", "object_MB",
+                             "write_s", "write_sd", "read_s", "read_sd", "MB")],
+             digits = 3,
+             caption = paste0("Spectra: serialisation cost by object size (mean ",
+                              "and SD of ", reps, " timed runs after one ",
+                              "warm-up; MB = bytes / 1e6). The complete table, ",
+                              "with the individual runs, is in ",
+                              "results/serialization_cost.csv."))
+```
+
+At the largest size (`r format(max(n_grid), big.mark = ",")` spectra) the formats
+compare as follows; the timing loop took `r round(as.numeric(.t_bench), 1)`
+minutes.
+
+```{r}
+#| label: headline
+.pm <- function(m, s) sprintf("%.2f ± %.2f", m, s)
+top <- res_spectra[res_spectra$n_spectra == max(n_grid), ]
+knitr::kable(data.frame(
+  format = top$method,
+  `write (s)` = .pm(top$write_s, top$write_sd),
+  `read (s)` = .pm(top$read_s, top$read_sd),
+  `on disk (MB)` = round(top$MB, 1),
+  `write vs qs2` = round(top$write_s / top$write_s[top$method == "qs2"], 1),
+  `size vs qs2` = round(top$MB / top$MB[top$method == "qs2"], 2),
+  check.names = FALSE),
+  caption = "Headline numbers at the largest object size (mean ± SD)")
+```
+
+```{r}
+#| label: plot-cost
+#| fig-width: 5.91
+#| fig-height: 3.15
+## Long format carrying, per metric, the value and its SD (size has no SD).
+res_long <- rbind(
+  data.frame(method = res_spectra$method, n = res_spectra$n_spectra,
+             metric = "write time (s)", value = res_spectra$write_s,
+             sd = res_spectra$write_sd),
+  data.frame(method = res_spectra$method, n = res_spectra$n_spectra,
+             metric = "read time (s)", value = res_spectra$read_s,
+             sd = res_spectra$read_sd),
+  data.frame(method = res_spectra$method, n = res_spectra$n_spectra,
+             metric = "on-disk size (MB)", value = res_spectra$MB,
+             sd = NA_real_))
+res_long$metric <- factor(res_long$metric,
+  levels = c("write time (s)", "read time (s)", "on-disk size (MB)"))
+res_long$method <- factor(res_long$method, levels = method_levels)
+## Error bars are mean +/- SD; on a log axis a lower end at or below zero cannot
+## be drawn, so such a bar is omitted rather than clipped.
+res_long$ymin <- ifelse(res_long$value - res_long$sd > 0,
+                        res_long$value - res_long$sd, NA_real_)
+res_long$ymax <- res_long$value + res_long$sd
+
+## The filled square looks larger than the other symbols, so it is drawn smaller.
+method_sizes <- c("saveRDS" = 1.8, "qs2" = 1.8, "alabaster" = 1.6)
+p_cost <- ggplot(res_long, aes(n, value, colour = method, shape = method,
+                               linetype = method)) +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax),
+                width = 0.025 * diff(range(res_long$n)), linewidth = 0.35,
+                linetype = "solid", na.rm = TRUE, show.legend = FALSE) +
+  geom_line(linewidth = 0.6) +
+  geom_point(aes(size = method)) +
+  facet_wrap(~metric, scales = "free_y", nrow = 1) +
+  scale_y_log10(breaks = scales::breaks_log(n = 6),
+                labels = scales::label_number(drop0trailing = TRUE, big.mark = ",")) +
+  scale_x_continuous(labels = scales::label_comma()) +
+  scale_colour_manual(values = method_colours, breaks = method_levels) +
+  scale_shape_manual(values = method_shapes, breaks = method_levels) +
+  scale_linetype_manual(values = method_linetypes, breaks = method_levels) +
+  scale_size_manual(values = method_sizes, breaks = method_levels) +
+  ## One merged legend whose keys show colour, symbol AND line type.
+  guides(colour = guide_legend(nrow = 1, override.aes = list(
+    linetype = unname(method_linetypes[method_levels]),
+    shape = unname(method_shapes[method_levels]),
+    size = unname(method_sizes[method_levels]),
+    linewidth = 0.6))) +
+  labs(x = "number of spectra (MTBLS8735)", y = NULL, colour = "format",
+       shape = "format", linetype = "format", size = "format") +
+  theme_bw(base_size = 9) +
+  theme(legend.position = "bottom",
+        legend.key.width = unit(1.6, "cm"),
+        legend.margin = margin(0, 0, 0, 0),
+        legend.box.spacing = unit(2, "pt"),
+        panel.grid.minor = element_blank(),
+        strip.background = element_rect(fill = "grey95"))
+p_cost
+
+## Persist the figure next to the tables: rendering the qmd regenerates it.
+## (Timings are wall-clock, so absolute values vary run to run.)
+ggsave(file.path(res_dir, "serialization_cost.png"), p_cost,
+       width = 15, height = 8, units = "cm", dpi = 300)
+```
+
+## 4. Fidelity: does the object round-trip identically?
+
+Speed is meaningless if the reloaded object is not the same object. For each
+method we write and reload the first 2,000 spectra (which span two sample
+files) and compare the reloaded object against the original: the m/z values,
+intensities and retention times (bit-for-bit, or within `all.equal()`
+tolerance), and every spectra variable that holds at least one value. Spectra
+variables that are entirely `NA` are listed separately when a format drops
+them.
+
+```{r}
+#| label: fidelity
+fid_n <- min(2000L, length(sps_full))
+obj <- spectra_at(fid_n)
+sv_orig <- as.data.frame(spectraData(obj))
+sv_with_values <- names(sv_orig)[vapply(sv_orig, function(z) !all(is.na(z)),
+                                        logical(1))]
+.same <- function(a, b) {
+  if (identical(a, b)) "identical"
+  else if (isTRUE(all.equal(a, b, check.attributes = FALSE))) "equal (tolerance)"
+  else "differs"
+}
+fidelity <- lapply(names(methods_spectra), function(m) {
+  mm <- methods_spectra[[m]]; p <- mm$path(tmp)
+  tryCatch({
+    mm$write(obj, p); ro <- mm$read(p)
+    sv_ro <- as.data.frame(spectraData(ro))
+    differs <- sv_with_values[!vapply(sv_with_values, function(cn)
+      isTRUE(all.equal(sv_orig[[cn]], sv_ro[[cn]], check.attributes = FALSE)),
+      logical(1))]
+    data.frame(method = m, n_spectra = fid_n,
+               mz = .same(unlist(mz(obj)), unlist(mz(ro))),
+               intensity = .same(unlist(intensity(obj)),
+                                 unlist(intensity(ro))),
+               rtime = .same(rtime(obj), rtime(ro)),
+               spectra_variables = if (length(differs)) "differ" else "equal",
+               differing_variables = paste(differs, collapse = ", "),
+               dropped_all_NA_variables = paste(
+                 setdiff(names(sv_orig), names(sv_ro)), collapse = ", "))
+  }, error = function(e)
+    data.frame(method = m, n_spectra = fid_n, mz = NA, intensity = NA,
+               rtime = NA, spectra_variables = NA,
+               differing_variables = paste("error:", conditionMessage(e)),
+               dropped_all_NA_variables = NA))
+})
+fidelity <- do.call(rbind, fidelity)
+write.csv(fidelity, file.path(res_dir, "serialization_fidelity.csv"),
+          row.names = FALSE)
+knitr::kable(fidelity[, c("method", "n_spectra", "mz", "intensity", "rtime",
+                          "spectra_variables", "differing_variables")],
+             caption = "Round-trip fidelity against the original object")
+knitr::kable(fidelity[, c("method", "dropped_all_NA_variables")],
+             caption = "Spectra variables without any value that a format does not write back")
+```
+
+## 5. Durability: language-agnostic and human-inspectable
+
+Fidelity within one session is necessary but not sufficient; the FAIR question
+is whether the file survives a change of R version, package version, or
+programming language. This is a property of the *format*, not of a single
+round-trip, so it is assessed qualitatively and illustrated rather than timed.
+
+```{r}
+#| label: durability-illustration
+# Show the alabaster representation on disk: a directory of HDF5 and JSON
+# files, each described by a JSON OBJECT file, that tools outside R can read.
+# Neither is true of .rds or .qs2.
+ab <- methods_spectra$alabaster$path(tmp)
+methods_spectra$alabaster$write(obj, ab)
+files <- list.files(ab, recursive = TRUE)
+cat("alabaster writes a directory of HDF5 and JSON files:\n")
+print(files)
+cat("\nThe top-level OBJECT file (JSON):\n")
+cat(readLines(file.path(ab, "OBJECT"), warn = FALSE), sep = "\n")
+```
+
+```{r}
+#| label: durability-table
+#| code-fold: true
+knitr::kable(data.frame(
+  Method = c("saveRDS", "qs2", "alabaster"),
+  `Reads outside R` = c("no", "no", "yes (HDF5/JSON)"),
+  `Human-diffable`  = c("no", "no", "JSON parts only"),
+  `Archival-safe`   = c("discouraged", "R-version bound",
+                        "yes (spec + validators)"),
+  check.names = FALSE),
+  caption = "Durability properties of each format")
+```
+
+## 6. xcms results
+
+The same cost benchmark, applied to an `XcmsExperiment` grown by the number of
+samples retained. The `alabaster` methods for `XcmsExperiment` will come from
+`xcmsStash`.
+
+```{r}
+#| label: bench-xcms
+#| eval: false
+library(xcmsStash)
+methods_xcms <- methods_spectra
+
+res_xcms <- do.call(rbind, lapply(xcms_grid, function(k)
+  bench_one(xcms_at(k), methods_xcms, k)))
+knitr::kable(res_xcms, digits = 3,
+             caption = "xcms XcmsExperiment: serialisation cost by number of samples")
+```
+
+## 7. Summary
+
+The tables above give the measured trade-off on real data. The binary formats
+(`saveRDS`, `qs2`) are the fastest to write and read and the smallest on disk,
+with `qs2` the fastest option and `saveRDS` the universal-within-R baseline.
+`alabaster` costs more, and in return buys language-agnostic, schema-based,
+durable storage. The fidelity table shows which values each format reloads
+identically.
+
+`alabaster` is therefore not a replacement for `saveRDS` as a fast cache: it is
+the option to reach for
+when a result must be deposited, shared across languages, or archived for the
+long term, i.e. when the data must be FAIR.
+
+```{r}
+#| label: cleanup
+#| include: false
+unlink(tmp, recursive = TRUE)
+.run_total <- difftime(Sys.time(), .run_start, units = "mins")
+```
+
+Rendering this document took `r round(as.numeric(.run_total), 1)` minutes in
+total (loading the data, the cost benchmark, fidelity and durability checks).
+
+## Session information
+
+```{r}
+#| label: sessioninfo
+#| code-fold: true
+si <- sessionInfo()
+writeLines(c(paste("CPU:", cpu_model()),
+             paste("Logical cores:", parallel::detectCores()),
+             paste("RAM total (GB):", ram_gb("total")), "",
+             capture.output(print(si))),
+           file.path(res_dir, "serialization_sessionInfo.txt"))
+si
+```

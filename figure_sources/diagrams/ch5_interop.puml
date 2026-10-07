@@ -1,0 +1,55 @@
+@startuml
+' Chapter 5: the two ways the R analysis session interoperates with the wider
+' toolset. Green = developed or co-developed by the author in this thesis;
+' grey = other R packages; yellow = R analysis session;
+' purple = external system / format.
+' Smetana layout: renders without a Graphviz/dot installation.
+!pragma layout smetana
+left to right direction
+skinparam defaultFontName Arial
+skinparam shadow false
+skinparam ArrowColor #555555
+skinparam defaultTextAlignment center
+skinparam rectangleBorderColor #999999
+skinparam legendBackgroundColor #FFFFFF
+
+rectangle "R analysis session\nSpectra, xcms, Chromatograms" as HUB #line:f9a825;back:fff8e1
+
+rectangle "Live in-session integration (via programmatic interfaces)" as M1 {
+  rectangle "public repositories\nMetaboLights, MassIVE, Workbench" as REPOS #line:5e35b1;back:ede7f6
+  rectangle "MsBackend downloaders\n(MetaboLights, MassIVE)" as DL #line:2e7d32;back:e8f5e9
+  rectangle "MsBackend downloader\n(Workbench)" as DLW #line:757575;back:eeeeee
+  rectangle "RuSirius" as RUS #line:2e7d32;back:e8f5e9
+  rectangle "SIRIUS engine" as SIRIUS #line:5e35b1;back:ede7f6
+  rectangle "SpectriPy" as SPY #line:757575;back:eeeeee
+  rectangle "Python (matchms)" as PY #line:5e35b1;back:ede7f6
+  REPOS --> DL : download
+  REPOS --> DLW : download
+  SIRIUS <-- RUS : REST API
+  PY <-- SPY : reticulate
+}
+
+rectangle "Exchange via files and community standards" as M2 {
+  rectangle "MsStash /\nSpectraStash" as STASH #line:2e7d32;back:e8f5e9
+  rectangle "Alabaster\n(HDF5/JSON)" as FILES #line:5e35b1;back:ede7f6
+  rectangle "RmzTabM" as RMZ #line:2e7d32;back:e8f5e9
+  rectangle "mzTab-M" as MZ #line:5e35b1;back:ede7f6
+  rectangle "xcms4gnps2" as GX #line:2e7d32;back:e8f5e9
+  rectangle "GNPS2 / FBMN" as GNPS #line:5e35b1;back:ede7f6
+  STASH --> FILES : serialise
+  RMZ --> MZ : read / write
+  GX --> GNPS : table + MGF
+}
+
+DL --> HUB
+DLW --> HUB
+RUS <-- HUB
+SPY <-- HUB
+HUB --> STASH
+HUB --> RMZ
+HUB --> GX
+
+legend bottom
+  Green = developed or co-developed in this thesis; grey = other R packages; yellow = R analysis session; purple = external system / format.
+endlegend
+@enduml

@@ -1,0 +1,123 @@
+@startuml
+left to right direction
+' Architecture of the Chromatograms infrastructure: the user-facing S4 object,
+' the virtual backend interface, and the shape of the data the in-memory
+' backend hands back through its accessors.
+'
+' Every class, slot, generic and multiplicity below is checked against the
+' Chromatograms package sources (E:/GitHub/Chromatograms):
+'   Chromatograms       setClass, 5 slots       R/Chromatograms.R:280-287
+'     backend, processingQueue, processing, processingChunkSize, version
+'   processingQueue holds ProcessingStep objects, not bare functions:
+'     addProcessing() wraps FUN            R/Chromatograms-processingQueue.R:187-194
+'     .valid_processing_queue() enforces it     R/helpers.R:159-164
+'   peaksData() evaluates the queue        R/Chromatograms-peaksData.R:392-405
+'   chromData() delegates to the backend   R/Chromatograms-chromData.R:180-185
+'   applyProcessing() writes back, clears queue
+'                                          R/Chromatograms-processingQueue.R:157-181
+'   ChromBackend        VIRTUAL, slot version    R/ChromBackend.R:529-535
+'   ChromBackendMemory  contains ChromBackend,
+'                       slots chromData, peaksData   R/ChromBackendMemory.R:77-89
+'   one-to-one alignment is NOT a setValidity (the package's only setValidity is
+'   R/Chromatograms.R:296 and does not check it). It is established at
+'   construction and kept by the setter:
+'     backendInitialize() pads peaksData to nrow(chromData)
+'                                          R/ChromBackendMemory.R:124-128
+'     chromData<- rejects a table of another length  R/ChromBackendMemory.R:173-175
+'   backendInitialize() drops all-NA columns from the stored table
+'                                          R/ChromBackendMemory.R:117-119
+'   chromData() fills the core variables back in on read
+'                                          R/ChromBackendMemory.R:162
+'   .CORE_CHROM_VARIABLES, 13 entries      R/ChromBackend-functions.R:10-24
+'   .CORE_PEAKS_VARIABLES, rtime/intensity R/ChromBackend-functions.R:113-116
+'   generics filterChromData/filterPeaksData/filterEmptyChromatograms
+'                                          R/AllGenerics.R:18-26
+' Smetana layout: renders without a Graphviz/dot installation.
+!pragma layout smetana
+title The Chromatograms object and the in-memory backend
+skinparam shadow false
+skinparam linetype ortho
+skinparam nodesep 24
+skinparam ranksep 34
+skinparam class {
+  BackgroundColor White
+  BorderColor #777777
+  ArrowColor #555555
+}
+skinparam package {
+  BackgroundColor #fafafa
+  BorderColor #aaaaaa
+}
+skinparam noteBackgroundColor #fffef2
+skinparam noteBorderColor #c9c48a
+
+package "classes" {
+
+  class Chromatograms <<S4 class>> {
+    backend : ChromBackend
+    processingQueue : list<ProcessingStep>
+    processing : character
+    processingChunkSize : numeric
+    version : character
+    --
+    chromData()
+    peaksData()
+    addProcessing()
+    applyProcessing()
+    setBackend()
+    chromExtract()
+  }
+
+  abstract class ChromBackend <<virtual>> {
+    version : character
+    --
+    chromData()
+    peaksData()
+    filterChromData()
+    filterPeaksData()
+    filterEmptyChromatograms()
+    chromExtract()
+  }
+
+  class ChromBackendMemory <<in memory>> {
+    chromData : data.frame
+    peaksData : list
+    --
+    backendInitialize()
+    chromData()
+    peaksData()
+    chromExtract()
+  }
+}
+
+package "returned tables" {
+
+  class chromData <<data.frame>> {
+    chromIndex : integer
+    collisionEnergy : numeric
+    dataOrigin : character
+    msLevel : integer
+    mz, mzMin, mzMax : numeric
+    precursorMz, precursorMzMin, precursorMzMax : numeric
+    productMz, productMzMin, productMzMax : numeric
+  }
+
+  class peaksData <<list>>
+
+  class "peaksData element i" as PDI <<data.frame>> {
+    rtime : numeric
+    intensity : numeric
+  }
+}
+
+Chromatograms "1" *-- "1" ChromBackend : holds
+ChromBackend <|-- ChromBackendMemory
+
+ChromBackendMemory -[hidden]right- chromData
+ChromBackendMemory *-- chromData
+ChromBackendMemory *-- peaksData
+
+chromData "1" -- "1" peaksData : row i / element i
+peaksData *-- PDI
+
+@enduml

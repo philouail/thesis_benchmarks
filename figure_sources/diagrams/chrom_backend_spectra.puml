@@ -1,0 +1,121 @@
+@startuml
+left to right direction
+' Backend extension architecture of the Chromatograms package: one virtual
+' interface, one in-memory implementation, and two backends that extend that
+' implementation rather than the interface itself.
+'
+' Every class, slot and generic below is checked against the Chromatograms
+' package sources (E:/GitHub/Chromatograms):
+'   Chromatograms        setClass, 5 slots     R/Chromatograms.R:280-287
+'   ChromBackend         VIRTUAL, slot version R/ChromBackend.R:529-535
+'                        no filter() generic exists; the filter generics are
+'                        filterChromData/filterPeaksData/filterEmptyChromatograms
+'                                              R/AllGenerics.R:18-26
+'   ChromBackendMemory   contains "ChromBackend",
+'                        slots chromData, peaksData
+'                                              R/ChromBackendMemory.R:77-89
+'   ChromBackendMzR      contains "ChromBackendMemory",
+'                        one slot only: inMemory    R/ChromBackendMzR.R:56-58
+'                        (no files/dataOrigin/processingQueue slots; the file
+'                        path of each chromatogram is written into the
+'                        dataOrigin column of the inherited chromData,
+'                        R/helpers.R:238, used at R/ChromBackendMzR.R:98, 132-135)
+'                        backendInitialize() :79, isReadOnly() :117,
+'                        peaksData() :121, chromExtract() :193
+'   ChromBackendSpectra  contains "ChromBackendMemory",
+'                        slots inMemory, spectra, summaryFun, spectraSortIndex
+'                                              R/ChromBackendSpectra.R:156-164
+'                        factorize.by and summarize.method are arguments of
+'                        backendInitialize(), not slots
+'                                              R/ChromBackendSpectra.R:187-193
+'                        backendInitialize() :187, factorize() :271,
+'                        isReadOnly() :340, peaksData() :343, chromExtract() :471
+'   both extending backends fall back on the memory methods via callNextMethod()
+'                        R/ChromBackendMzR.R:90, 126, 148;
+'                        R/ChromBackendSpectra.R:231, 348, 401
+' Smetana layout: renders without a Graphviz/dot installation.
+!pragma layout smetana
+title Backend extension architecture
+skinparam shadow false
+skinparam linetype ortho
+skinparam nodesep 26
+skinparam ranksep 36
+skinparam class {
+  BackgroundColor White
+  BorderColor #777777
+  ArrowColor #555555
+}
+skinparam package {
+  BackgroundColor #fafafa
+  BorderColor #aaaaaa
+}
+skinparam noteBackgroundColor #fffef2
+skinparam noteBorderColor #c9c48a
+
+package "user interface" {
+
+  class Chromatograms <<S4 class>> {
+    backend : ChromBackend
+    processingQueue : list<ProcessingStep>
+    processing : character
+    processingChunkSize : numeric
+    version : character
+    --
+    setBackend()
+    chromData()
+    peaksData()
+    chromExtract()
+  }
+
+  abstract class ChromBackend <<virtual>> {
+    version : character
+    --
+    chromData()
+    peaksData()
+    filterChromData()
+    filterPeaksData()
+    filterEmptyChromatograms()
+    chromExtract()
+  }
+}
+
+package "backend implementations" {
+
+  class ChromBackendMemory <<in memory>> {
+    chromData : data.frame
+    peaksData : list
+    --
+    backendInitialize()
+    chromData()
+    peaksData()
+    chromExtract()
+  }
+
+  class ChromBackendMzR <<on disk>> {
+    inMemory : logical
+    --
+    backendInitialize()
+    peaksData()
+    chromExtract()
+    isReadOnly()
+  }
+
+  class ChromBackendSpectra <<on the fly>> {
+    inMemory : logical
+    spectra : Spectra
+    summaryFun : function
+    spectraSortIndex : integer
+    --
+    backendInitialize()
+    factorize()
+    peaksData()
+    chromExtract()
+  }
+}
+
+Chromatograms "1" *-- "1" ChromBackend : holds
+ChromBackend <|-- ChromBackendMemory
+ChromBackendMemory <|-- ChromBackendMzR
+ChromBackendMemory <|-- ChromBackendSpectra
+
+@enduml
